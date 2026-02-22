@@ -1,0 +1,1505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SIGNAL // NOISE - A Turndown Game</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a0a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Press Start 2P', monospace;
+    overflow: hidden;
+  }
+
+  #gameWrapper {
+    position: relative;
+    border: 4px solid #ff6b35;
+    box-shadow: 0 0 40px rgba(255, 107, 53, 0.3), inset 0 0 40px rgba(0,0,0,0.5);
+    image-rendering: pixelated;
+  }
+
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+
+  #uiOverlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  #scanlines {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.15) 0px,
+      rgba(0, 0, 0, 0.15) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    pointer-events: none;
+    z-index: 20;
+  }
+
+  .mobile-controls {
+    display: none;
+    position: fixed;
+    bottom: 20px;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    pointer-events: none;
+  }
+
+  .mobile-controls button {
+    pointer-events: all;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 14px;
+    background: rgba(255, 107, 53, 0.3);
+    color: #ff6b35;
+    border: 2px solid #ff6b35;
+    padding: 15px 20px;
+    border-radius: 8px;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .dpad {
+    position: fixed;
+    bottom: 30px;
+    left: 30px;
+    display: grid;
+    grid-template-columns: 50px 50px 50px;
+    grid-template-rows: 50px 50px 50px;
+    gap: 4px;
+    pointer-events: none;
+  }
+
+  .dpad button {
+    pointer-events: all;
+    font-size: 18px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .fire-btn {
+    position: fixed;
+    bottom: 50px;
+    right: 30px;
+    width: 80px;
+    height: 80px;
+    border-radius: 50% !important;
+    font-size: 10px !important;
+    pointer-events: all;
+  }
+
+  @media (max-width: 768px) {
+    .mobile-controls { display: block; }
+    #gameWrapper { border-width: 2px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="gameWrapper">
+  <canvas id="game"></canvas>
+  <div id="scanlines"></div>
+  <div id="uiOverlay"></div>
+</div>
+
+<div class="mobile-controls">
+  <div class="dpad">
+    <div></div>
+    <button id="btnUp">▲</button>
+    <div></div>
+    <button id="btnLeft">◄</button>
+    <div></div>
+    <button id="btnRight">►</button>
+    <div></div>
+    <button id="btnDown">▼</button>
+    <div></div>
+  </div>
+  <button class="fire-btn" id="btnFire">FIRE</button>
+</div>
+
+<script>
+// ============================================================
+// SIGNAL // NOISE — A Turndown Game
+// ============================================================
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// Game dimensions
+const W = 800;
+const H = 500;
+canvas.width = W;
+canvas.height = H;
+
+// Scale canvas for display
+function resizeCanvas() {
+  const maxW = window.innerWidth - 20;
+  const maxH = window.innerHeight - 20;
+  const scale = Math.min(maxW / W, maxH / H, 1.5);
+  canvas.style.width = (W * scale) + 'px';
+  canvas.style.height = (H * scale) + 'px';
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+// ============================================================
+// GAME STATE
+// ============================================================
+const STATES = { TITLE: 0, INTRO: 1, PLAYING: 2, BOSS_INTRO: 3, BOSS: 4, WIN: 5, GAMEOVER: 6, TRANSITION: 7 };
+let gameState = STATES.TITLE;
+let stateTimer = 0;
+let score = 0;
+let level = 1;
+
+// Input
+const keys = {};
+window.addEventListener('keydown', e => { keys[e.key] = true; if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault(); });
+window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// Mobile controls
+function setupMobileBtn(id, key) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  btn.addEventListener('touchstart', e => { e.preventDefault(); keys[key] = true; });
+  btn.addEventListener('touchend', e => { e.preventDefault(); keys[key] = false; });
+}
+setupMobileBtn('btnUp', 'ArrowUp');
+setupMobileBtn('btnDown', 'ArrowDown');
+setupMobileBtn('btnLeft', 'ArrowLeft');
+setupMobileBtn('btnRight', 'ArrowRight');
+setupMobileBtn('btnFire', ' ');
+
+// ============================================================
+// COLORS
+// ============================================================
+const COL = {
+  bg: '#0d1117',
+  orange: '#ff6b35',
+  cyan: '#00d4ff',
+  green: '#39ff14',
+  red: '#ff1744',
+  purple: '#b388ff',
+  yellow: '#ffd600',
+  white: '#f0f0f0',
+  dark: '#1a1a2e',
+  pink: '#ff6b9d',
+  gray: '#4a4a5a',
+};
+
+// ============================================================
+// PIXEL ART RENDERER
+// ============================================================
+function drawPixelSprite(x, y, sprite, scale = 2) {
+  for (let row = 0; row < sprite.length; row++) {
+    for (let col = 0; col < sprite[row].length; col++) {
+      if (sprite[row][col]) {
+        ctx.fillStyle = sprite[row][col];
+        ctx.fillRect(
+          Math.floor(x + col * scale),
+          Math.floor(y + row * scale),
+          scale, scale
+        );
+      }
+    }
+  }
+}
+
+// ============================================================
+// SPRITES
+// ============================================================
+const o = COL.orange, c = COL.cyan, w = COL.white, g = COL.green, r = COL.red,
+      p = COL.purple, y = COL.yellow, k = '#222', d = COL.dark, gr = COL.gray;
+
+// Player - marketer with camera
+const PLAYER_SPRITE = [
+  [0,0,0,o,o,o,0,0],
+  [0,0,o,o,o,o,o,0],
+  [0,0,w,k,w,k,w,0],
+  [0,0,w,w,w,w,w,0],
+  [0,c,c,c,c,c,0,0],
+  [0,0,c,c,c,0,0,0],
+  [0,c,0,c,0,c,0,0],
+  [0,c,0,0,0,c,0,0],
+];
+
+// Camera projectile
+const BULLET_SPRITE = [
+  [c,w,c],
+  [w,c,w],
+];
+
+// Enemy: AI Text blob
+const AI_BLOB_SPRITE = [
+  [0,p,p,p,p,p,0,0],
+  [p,p,w,p,w,p,p,0],
+  [p,p,p,p,p,p,p,0],
+  [p,p,p,p,p,p,p,0],
+  [0,p,p,p,p,p,0,0],
+  [0,0,p,p,p,0,0,0],
+];
+
+// Enemy: Vanity metric counter
+const VANITY_SPRITE = [
+  [0,y,y,y,y,y,0,0],
+  [y,k,y,y,y,k,y,0],
+  [y,y,y,y,y,y,y,0],
+  [y,y,y,y,y,y,y,0],
+  [0,y,y,y,y,y,0,0],
+];
+
+// Enemy: One-and-done video tombstone
+const TOMBSTONE_SPRITE = [
+  [0,0,gr,gr,gr,0,0,0],
+  [0,gr,gr,gr,gr,gr,0],
+  [0,gr,w,gr,w,gr,0],
+  [0,gr,gr,gr,gr,gr,0],
+  [0,gr,gr,gr,gr,gr,0],
+  [gr,gr,gr,gr,gr,gr,gr],
+];
+
+// Enemy: Unread blog
+const BLOG_SPRITE = [
+  [w,w,w,w,w,w,0,0],
+  [w,gr,gr,gr,gr,w,0],
+  [w,gr,gr,gr,gr,w,0],
+  [w,gr,gr,gr,gr,w,0],
+  [w,w,w,w,w,w,0,0],
+  [0,0,w,w,0,0,0,0],
+];
+
+// Enemy: Corporate jargon
+const JARGON_SPRITE = [
+  [0,r,r,r,r,r,r,0],
+  [r,w,w,w,w,w,w,r],
+  [r,w,r,w,r,w,r,r],
+  [r,w,w,w,w,w,w,r],
+  [0,r,r,r,r,r,r,0],
+  [0,0,0,r,r,0,0,0],
+];
+
+// Enemy: Fake CMO
+const FAKECMO_SPRITE = [
+  [0,0,gr,gr,gr,0,0,0],
+  [0,gr,p,p,p,gr,0,0],
+  [0,gr,k,gr,k,gr,0,0],
+  [0,0,gr,gr,gr,0,0,0],
+  [0,gr,r,r,r,gr,0,0],
+  [0,0,gr,gr,gr,0,0,0],
+  [0,gr,0,0,0,gr,0,0],
+];
+
+// Boss sprite
+const BOSS_SPRITE = [
+  [0,0,r,r,r,r,r,r,r,r,0,0],
+  [0,r,r,p,r,r,r,r,p,r,r,0],
+  [r,r,r,r,r,r,r,r,r,r,r,r],
+  [r,y,r,w,k,r,r,w,k,r,y,r],
+  [r,y,r,r,r,r,r,r,r,r,y,r],
+  [r,r,r,r,r,g,g,r,r,r,r,r],
+  [r,r,r,r,r,r,r,r,r,r,r,r],
+  [0,r,r,r,r,r,r,r,r,r,r,0],
+  [0,0,r,r,r,r,r,r,r,r,0,0],
+  [0,r,0,r,0,0,0,0,r,0,r,0],
+];
+
+// Power up
+const POWERUP_SPRITE = [
+  [0,c,c,0],
+  [c,w,w,c],
+  [c,w,w,c],
+  [0,c,c,0],
+];
+
+// ============================================================
+// ENTITIES
+// ============================================================
+let player = null;
+let bullets = [];
+let enemies = [];
+let particles = [];
+let powerups = [];
+let textPopups = [];
+let starfield = [];
+let boss = null;
+let waveTimer = 0;
+let waveCount = 0;
+let shootCooldown = 0;
+let introText = [];
+let introIndex = 0;
+let introCharIndex = 0;
+let introTimer = 0;
+let shakeTimer = 0;
+let shakeIntensity = 0;
+let bossDeathTimer = 0;
+
+// Death quips for each enemy type
+const DEATH_QUIPS = {
+  ai: [
+    '"As an AI language model, I—" *dead*',
+    '"Let me help you leverage syn—" *poof*',
+    '"Delve into th—" *splat*',
+    '"In today\'s fast-paced—" *nope*',
+    '"Certainly! Here\'s a compreh—" *bye*',
+  ],
+  vanity: [
+    '"But we got 10K impressions!"',
+    '"The reach was incredible tho"',
+    '"It went semi-viral!"',
+    '"CEO saw it on LinkedIn!"',
+    '"Engagement rate was... oh."',
+  ],
+  tombstone: [
+    '"We posted it 6 months ago"',
+    '"One video should be enough"',
+    '"We already did video"',
+    '"Our 2019 video still works"',
+  ],
+  blog: [
+    '"500 words, SEO optimized!"',
+    '"We post 4x a week!"',
+    '"Nobody reads but Google does"',
+    '"Content is king!" *dies*',
+  ],
+  jargon: [
+    '"Circle back to—" *gone*',
+    '"Let\'s ideate on—" *nah*',
+    '"Synergize the—" *no*',
+    '"Move the needle—" *dead*',
+    '"Low-hanging fruit—" *splat*',
+  ],
+  fakecmo: [
+    '"I read a book about CMOs"',
+    '"I have a framework for that"',
+    '"Strategic alignment is—"',
+    '"My LinkedIn says CMO"',
+    '"Fractional means part-time right?"',
+  ],
+  boss: [
+    '"We\'ll circle back Q3!"',
+    '"That\'s out of scope!"',
+    '"Per our retainer agreement—"',
+    '"We need more budget to test"',
+  ],
+};
+
+function randomQuip(type) {
+  const q = DEATH_QUIPS[type];
+  return q[Math.floor(Math.random() * q.length)];
+}
+
+// Stars
+function initStarfield() {
+  starfield = [];
+  for (let i = 0; i < 80; i++) {
+    starfield.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      speed: 0.2 + Math.random() * 0.8,
+      brightness: 0.3 + Math.random() * 0.7,
+    });
+  }
+}
+initStarfield();
+
+function resetGame() {
+  player = {
+    x: 80,
+    y: H / 2,
+    w: 16,
+    h: 16,
+    hp: 5,
+    maxHp: 5,
+    speed: 3,
+    invincible: 0,
+    powerup: null,
+    powerupTimer: 0,
+    tripleShot: false,
+  };
+  bullets = [];
+  enemies = [];
+  particles = [];
+  powerups = [];
+  textPopups = [];
+  boss = null;
+  waveTimer = 0;
+  waveCount = 0;
+  shootCooldown = 0;
+  score = 0;
+  level = 1;
+  bossDeathTimer = 0;
+}
+
+// ============================================================
+// ENEMY FACTORY
+// ============================================================
+const ENEMY_TYPES = {
+  ai: {
+    sprite: AI_BLOB_SPRITE, hp: 2, speed: 1.2, score: 100, w: 14, h: 12,
+    label: 'AI SLOP', quipType: 'ai', color: COL.purple,
+  },
+  vanity: {
+    sprite: VANITY_SPRITE, hp: 1, speed: 1.8, score: 75, w: 14, h: 10,
+    label: 'VANITY METRIC', quipType: 'vanity', color: COL.yellow,
+  },
+  tombstone: {
+    sprite: TOMBSTONE_SPRITE, hp: 3, speed: 0.6, score: 150, w: 14, h: 14,
+    label: 'ONE & DONE', quipType: 'tombstone', color: COL.gray,
+  },
+  blog: {
+    sprite: BLOG_SPRITE, hp: 1, speed: 1.5, score: 50, w: 12, h: 12,
+    label: 'UNREAD BLOG', quipType: 'blog', color: COL.white,
+  },
+  jargon: {
+    sprite: JARGON_SPRITE, hp: 2, speed: 1.4, score: 125, w: 16, h: 12,
+    label: 'JARGON', quipType: 'jargon', color: COL.red,
+  },
+  fakecmo: {
+    sprite: FAKECMO_SPRITE, hp: 3, speed: 0.8, score: 200, w: 14, h: 14,
+    label: 'FAKE CMO', quipType: 'fakecmo', color: COL.pink,
+  },
+};
+
+function spawnEnemy(type) {
+  const t = ENEMY_TYPES[type];
+  const enemy = {
+    x: W + 20,
+    y: 40 + Math.random() * (H - 100),
+    w: t.w, h: t.h,
+    hp: t.hp, maxHp: t.hp,
+    speed: t.speed + Math.random() * 0.3,
+    sprite: t.sprite,
+    type: type,
+    score: t.score,
+    label: t.label,
+    quipType: t.quipType,
+    color: t.color,
+    wobble: Math.random() * Math.PI * 2,
+    wobbleSpeed: 1 + Math.random() * 2,
+    wobbleAmp: 15 + Math.random() * 25,
+    shootTimer: type === 'jargon' ? 60 + Math.random() * 90 : 0,
+  };
+  enemies.push(enemy);
+}
+
+function spawnWave() {
+  waveCount++;
+  const types = ['ai', 'vanity', 'tombstone', 'blog', 'jargon', 'fakecmo'];
+
+  if (waveCount <= 3) {
+    // Early waves: AI slop + vanity metrics
+    for (let i = 0; i < 3; i++) spawnEnemy('ai');
+    for (let i = 0; i < 2; i++) spawnEnemy('vanity');
+  } else if (waveCount <= 5) {
+    // Mid waves: mix in blogs and tombstones
+    for (let i = 0; i < 2; i++) spawnEnemy('ai');
+    for (let i = 0; i < 2; i++) spawnEnemy('blog');
+    spawnEnemy('tombstone');
+    spawnEnemy('vanity');
+  } else if (waveCount <= 7) {
+    // Later waves: jargon and fake CMOs
+    for (let i = 0; i < 2; i++) spawnEnemy('jargon');
+    for (let i = 0; i < 2; i++) spawnEnemy('fakecmo');
+    spawnEnemy('ai');
+    spawnEnemy('blog');
+  } else {
+    // Final waves: everything
+    for (let i = 0; i < 2 + Math.floor(Math.random() * 2); i++) {
+      spawnEnemy(types[Math.floor(Math.random() * types.length)]);
+    }
+    spawnEnemy('fakecmo');
+    spawnEnemy('jargon');
+  }
+}
+
+// ============================================================
+// BOSS
+// ============================================================
+function spawnBoss() {
+  boss = {
+    x: W - 100,
+    y: H / 2 - 30,
+    w: 48, h: 40,
+    hp: 40,
+    maxHp: 40,
+    phase: 0,
+    phaseTimer: 0,
+    moveDir: 1,
+    speed: 1,
+    attackTimer: 0,
+    shieldActive: false,
+    shieldHp: 0,
+    spawnTimer: 0,
+    chargeTimer: 0,
+    charging: false,
+    chargeX: 0,
+    vulnerable: false,
+    vulnerableTimer: 0,
+    flashTimer: 0,
+    name: 'THE AGENCY OF RECORD',
+    subtitle: '"We\'ll need 6 months and a discovery phase"',
+    quoteTimer: 0,
+    currentQuote: '',
+  };
+}
+
+// ============================================================
+// PARTICLES
+// ============================================================
+function spawnExplosion(x, y, color, count = 12) {
+  for (let i = 0; i < count; i++) {
+    const angle = (Math.PI * 2 / count) * i + Math.random() * 0.3;
+    const speed = 1 + Math.random() * 3;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 30 + Math.random() * 20,
+      maxLife: 50,
+      color: color,
+      size: 2 + Math.random() * 3,
+    });
+  }
+}
+
+function spawnTextPopup(x, y, text, color = COL.white) {
+  textPopups.push({ x, y, text, color, life: 90, vy: -0.8 });
+}
+
+// ============================================================
+// SHOOTING
+// ============================================================
+function shoot() {
+  if (shootCooldown > 0) return;
+  shootCooldown = player.tripleShot ? 8 : 12;
+
+  const bx = player.x + player.w;
+  const by = player.y + player.h / 2 - 2;
+
+  bullets.push({ x: bx, y: by, vx: 6, vy: 0, w: 6, h: 4, friendly: true });
+
+  if (player.tripleShot) {
+    bullets.push({ x: bx, y: by - 6, vx: 6, vy: -1.5, w: 6, h: 4, friendly: true });
+    bullets.push({ x: bx, y: by + 6, vx: 6, vy: 1.5, w: 6, h: 4, friendly: true });
+  }
+}
+
+function enemyShoot(enemy) {
+  bullets.push({
+    x: enemy.x,
+    y: enemy.y + enemy.h / 2,
+    vx: -4,
+    vy: (player.y - enemy.y) * 0.02,
+    w: 4, h: 4,
+    friendly: false,
+    color: enemy.color || COL.red,
+  });
+}
+
+function bossShoot(pattern) {
+  if (!boss) return;
+  const bx = boss.x;
+  const by = boss.y + boss.h / 2;
+
+  if (pattern === 'spread') {
+    for (let i = -3; i <= 3; i++) {
+      bullets.push({
+        x: bx, y: by,
+        vx: -4,
+        vy: i * 1.2,
+        w: 5, h: 5,
+        friendly: false,
+        color: COL.red,
+      });
+    }
+  } else if (pattern === 'aimed') {
+    const dx = player.x - bx;
+    const dy = player.y - by;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    for (let i = 0; i < 3; i++) {
+      setTimeout(() => {
+        if (boss) {
+          bullets.push({
+            x: bx, y: by,
+            vx: (dx / dist) * 5,
+            vy: (dy / dist) * 5,
+            w: 5, h: 5,
+            friendly: false,
+            color: COL.purple,
+          });
+        }
+      }, i * 150);
+    }
+  } else if (pattern === 'contracts') {
+    // Slow-moving "contract" projectiles
+    for (let i = 0; i < 2; i++) {
+      bullets.push({
+        x: bx, y: by + (i === 0 ? -30 : 30),
+        vx: -2,
+        vy: 0,
+        w: 12, h: 8,
+        friendly: false,
+        color: COL.yellow,
+        isContract: true,
+      });
+    }
+  }
+}
+
+// ============================================================
+// COLLISION
+// ============================================================
+function collides(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+// ============================================================
+// UPDATE
+// ============================================================
+function update() {
+  stateTimer++;
+
+  // Stars always move
+  starfield.forEach(s => {
+    s.x -= s.speed;
+    if (s.x < 0) { s.x = W; s.y = Math.random() * H; }
+  });
+
+  if (gameState === STATES.TITLE) {
+    if (keys[' '] || keys['Enter']) {
+      gameState = STATES.INTRO;
+      stateTimer = 0;
+      introIndex = 0;
+      introCharIndex = 0;
+      introTimer = 0;
+      introText = [
+        "THE YEAR IS 2025.",
+        "MARKETING HAS FALLEN.",
+        "",
+        "AI SLOP FLOODS EVERY FEED.",
+        "AGENCIES CHARGE $20K/MO TO",
+        "\"CIRCLE BACK\" ON EVERYTHING.",
+        "",
+        "LOCAL SHOPS ARE SELLING",
+        "\"FRACTIONAL CMO\" SERVICES",
+        "AFTER READING ONE LINKEDIN POST.",
+        "",
+        "BUT YOU HAVE A CAMERA.",
+        "AND YOU KNOW WHAT ACTUALLY WORKS.",
+        "",
+        "PRESS SPACE TO FIGHT BACK.",
+      ];
+    }
+    return;
+  }
+
+  if (gameState === STATES.INTRO) {
+    introTimer++;
+    if (introTimer % 2 === 0 && introIndex < introText.length) {
+      introCharIndex++;
+      if (introCharIndex >= introText[introIndex].length) {
+        introIndex++;
+        introCharIndex = 0;
+        introTimer = -10; // small pause between lines
+      }
+    }
+    if (keys[' '] || keys['Enter']) {
+      if (introIndex >= introText.length - 1) {
+        gameState = STATES.PLAYING;
+        stateTimer = 0;
+        resetGame();
+      } else {
+        introIndex = introText.length - 1;
+        introCharIndex = introText[introText.length - 1].length;
+      }
+    }
+    return;
+  }
+
+  if (gameState === STATES.GAMEOVER) {
+    if (stateTimer > 60 && (keys[' '] || keys['Enter'])) {
+      gameState = STATES.TITLE;
+      stateTimer = 0;
+    }
+    return;
+  }
+
+  if (gameState === STATES.WIN) {
+    if (stateTimer > 60 && (keys[' '] || keys['Enter'])) {
+      gameState = STATES.TITLE;
+      stateTimer = 0;
+    }
+    return;
+  }
+
+  if (gameState === STATES.TRANSITION) {
+    if (stateTimer > 120) {
+      gameState = STATES.BOSS_INTRO;
+      stateTimer = 0;
+      spawnBoss();
+    }
+    return;
+  }
+
+  if (gameState === STATES.BOSS_INTRO) {
+    if (stateTimer > 180 || keys[' ']) {
+      gameState = STATES.BOSS;
+      stateTimer = 0;
+    }
+    return;
+  }
+
+  // ---- PLAYING / BOSS ----
+  if (gameState !== STATES.PLAYING && gameState !== STATES.BOSS) return;
+
+  // Shake
+  if (shakeTimer > 0) shakeTimer--;
+
+  // Player movement
+  if (player) {
+    const spd = player.speed;
+    if (keys['ArrowUp'] || keys['w'] || keys['W']) player.y -= spd;
+    if (keys['ArrowDown'] || keys['s'] || keys['S']) player.y += spd;
+    if (keys['ArrowLeft'] || keys['a'] || keys['A']) player.x -= spd;
+    if (keys['ArrowRight'] || keys['d'] || keys['D']) player.x += spd;
+
+    player.x = Math.max(0, Math.min(W - player.w - 200, player.x));
+    player.y = Math.max(10, Math.min(H - player.h - 10, player.y));
+
+    if (keys[' ']) shoot();
+    if (shootCooldown > 0) shootCooldown--;
+
+    if (player.invincible > 0) player.invincible--;
+    if (player.powerupTimer > 0) {
+      player.powerupTimer--;
+      if (player.powerupTimer <= 0) {
+        player.tripleShot = false;
+        player.powerup = null;
+      }
+    }
+  }
+
+  // Bullets
+  bullets.forEach(b => {
+    b.x += b.vx;
+    b.y += b.vy;
+  });
+  bullets = bullets.filter(b => b.x > -20 && b.x < W + 20 && b.y > -20 && b.y < H + 20);
+
+  // Enemies
+  enemies.forEach(e => {
+    e.wobble += e.wobbleSpeed * 0.03;
+    e.x -= e.speed;
+    e.y += Math.sin(e.wobble) * 0.5;
+
+    // Some enemies shoot
+    if (e.shootTimer > 0) {
+      e.shootTimer--;
+      if (e.shootTimer <= 0) {
+        enemyShoot(e);
+        e.shootTimer = 90 + Math.random() * 60;
+      }
+    }
+  });
+
+  // Enemy-bullet collision
+  bullets.forEach(b => {
+    if (!b.friendly) return;
+    enemies.forEach(e => {
+      if (e.hp <= 0) return;
+      if (collides(b, e)) {
+        e.hp--;
+        b.hp = 0;
+        spawnExplosion(b.x, b.y, e.color, 4);
+        if (e.hp <= 0) {
+          score += e.score;
+          spawnExplosion(e.x + e.w / 2, e.y + e.h / 2, e.color, 16);
+          spawnTextPopup(e.x, e.y - 10, randomQuip(e.quipType), e.color);
+          spawnTextPopup(e.x + 10, e.y + 20, `+${e.score}`, COL.green);
+          shakeTimer = 6;
+          shakeIntensity = 3;
+          // Chance to drop powerup
+          if (Math.random() < 0.12) {
+            powerups.push({
+              x: e.x, y: e.y, w: 8, h: 8,
+              type: Math.random() < 0.5 ? 'triple' : 'heal',
+              life: 300,
+            });
+          }
+        }
+      }
+    });
+  });
+  bullets = bullets.filter(b => b.hp !== 0);
+  enemies = enemies.filter(e => e.hp > 0 && e.x > -40);
+
+  // Player-enemy collision
+  if (player && player.invincible <= 0) {
+    enemies.forEach(e => {
+      if (collides(player, e)) {
+        player.hp--;
+        player.invincible = 60;
+        shakeTimer = 10;
+        shakeIntensity = 5;
+        spawnExplosion(player.x, player.y, COL.red, 8);
+      }
+    });
+
+    // Player-bullet collision (enemy bullets)
+    bullets.forEach(b => {
+      if (b.friendly) return;
+      if (collides(player, b)) {
+        player.hp--;
+        player.invincible = 60;
+        b.hp = 0;
+        shakeTimer = 8;
+        shakeIntensity = 4;
+        spawnExplosion(player.x, player.y, COL.red, 6);
+      }
+    });
+  }
+
+  // Powerup collection
+  powerups.forEach(pu => {
+    pu.life--;
+    if (player && collides(player, pu)) {
+      pu.life = 0;
+      if (pu.type === 'triple') {
+        player.tripleShot = true;
+        player.powerupTimer = 300;
+        player.powerup = 'PRODUCTION BOOST';
+        spawnTextPopup(player.x, player.y - 15, '🎥 TRIPLE SHOT!', COL.cyan);
+      } else if (pu.type === 'heal') {
+        player.hp = Math.min(player.maxHp, player.hp + 2);
+        spawnTextPopup(player.x, player.y - 15, '📊 +2 HP!', COL.green);
+      }
+    }
+  });
+  powerups = powerups.filter(pu => pu.life > 0);
+
+  // Particles
+  particles.forEach(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vx *= 0.96;
+    p.vy *= 0.96;
+    p.life--;
+  });
+  particles = particles.filter(p => p.life > 0);
+
+  // Text popups
+  textPopups.forEach(t => {
+    t.y += t.vy;
+    t.life--;
+  });
+  textPopups = textPopups.filter(t => t.life > 0);
+
+  // Game over check
+  if (player && player.hp <= 0) {
+    gameState = STATES.GAMEOVER;
+    stateTimer = 0;
+    spawnExplosion(player.x + 8, player.y + 8, COL.orange, 30);
+  }
+
+  // Wave spawning (level 1)
+  if (gameState === STATES.PLAYING) {
+    waveTimer++;
+    if (waveTimer >= 180 && enemies.length < 3) {
+      waveTimer = 0;
+      if (waveCount < 9) {
+        spawnWave();
+      } else if (enemies.length === 0) {
+        gameState = STATES.TRANSITION;
+        stateTimer = 0;
+      }
+    }
+  }
+
+  // Boss logic
+  if (gameState === STATES.BOSS && boss) {
+    boss.phaseTimer++;
+
+    // Boss movement
+    boss.y += boss.moveDir * boss.speed;
+    if (boss.y < 30 || boss.y > H - boss.h - 30) boss.moveDir *= -1;
+
+    // Boss quotes
+    boss.quoteTimer--;
+    if (boss.quoteTimer <= 0) {
+      boss.currentQuote = DEATH_QUIPS.boss[Math.floor(Math.random() * DEATH_QUIPS.boss.length)];
+      boss.quoteTimer = 150 + Math.random() * 100;
+    }
+
+    // Boss phases based on HP
+    const hpPct = boss.hp / boss.maxHp;
+    if (hpPct > 0.7) {
+      boss.phase = 0;
+      boss.speed = 1.2;
+      boss.attackTimer--;
+      if (boss.attackTimer <= 0) {
+        bossShoot('spread');
+        boss.attackTimer = 80;
+      }
+    } else if (hpPct > 0.4) {
+      boss.phase = 1;
+      boss.speed = 1.8;
+      boss.attackTimer--;
+      if (boss.attackTimer <= 0) {
+        if (Math.random() < 0.5) {
+          bossShoot('aimed');
+        } else {
+          bossShoot('contracts');
+        }
+        boss.attackTimer = 60;
+      }
+      // Spawn minions
+      boss.spawnTimer--;
+      if (boss.spawnTimer <= 0) {
+        spawnEnemy('ai');
+        spawnEnemy('vanity');
+        boss.spawnTimer = 200;
+      }
+    } else {
+      boss.phase = 2;
+      boss.speed = 2.2;
+      boss.attackTimer--;
+      if (boss.attackTimer <= 0) {
+        bossShoot('spread');
+        bossShoot('aimed');
+        boss.attackTimer = 50;
+      }
+      boss.spawnTimer--;
+      if (boss.spawnTimer <= 0) {
+        spawnEnemy('fakecmo');
+        spawnEnemy('jargon');
+        boss.spawnTimer = 180;
+      }
+    }
+
+    // Boss hit detection
+    bullets.forEach(b => {
+      if (!b.friendly) return;
+      if (collides(b, boss)) {
+        boss.hp--;
+        b.hp = 0;
+        boss.flashTimer = 6;
+        spawnExplosion(b.x, b.y, COL.orange, 3);
+        score += 10;
+        if (boss.hp <= 0) {
+          // Boss defeated
+          gameState = STATES.WIN;
+          stateTimer = 0;
+          for (let i = 0; i < 50; i++) {
+            setTimeout(() => {
+              spawnExplosion(
+                boss.x + Math.random() * boss.w * 2,
+                boss.y + Math.random() * boss.h * 2,
+                [COL.red, COL.orange, COL.yellow, COL.purple][Math.floor(Math.random() * 4)],
+                8
+              );
+            }, i * 50);
+          }
+          shakeTimer = 30;
+          shakeIntensity = 8;
+        }
+      }
+    });
+
+    // Boss collision with player
+    if (player && player.invincible <= 0 && collides(player, boss)) {
+      player.hp -= 2;
+      player.invincible = 90;
+      shakeTimer = 12;
+      shakeIntensity = 6;
+    }
+
+    if (boss.flashTimer > 0) boss.flashTimer--;
+  }
+}
+
+// ============================================================
+// RENDER
+// ============================================================
+function render() {
+  // Screen shake offset
+  let sx = 0, sy = 0;
+  if (shakeTimer > 0) {
+    sx = (Math.random() - 0.5) * shakeIntensity;
+    sy = (Math.random() - 0.5) * shakeIntensity;
+  }
+
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  // BG
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(-10, -10, W + 20, H + 20);
+
+  // Stars
+  starfield.forEach(s => {
+    ctx.fillStyle = `rgba(255, 255, 255, ${s.brightness * 0.5})`;
+    ctx.fillRect(Math.floor(s.x), Math.floor(s.y), 1, 1);
+  });
+
+  if (gameState === STATES.TITLE) {
+    renderTitle();
+    ctx.restore();
+    return;
+  }
+
+  if (gameState === STATES.INTRO) {
+    renderIntro();
+    ctx.restore();
+    return;
+  }
+
+  if (gameState === STATES.TRANSITION) {
+    renderTransition();
+    ctx.restore();
+    return;
+  }
+
+  if (gameState === STATES.BOSS_INTRO) {
+    renderBossIntro();
+    ctx.restore();
+    return;
+  }
+
+  if (gameState === STATES.GAMEOVER) {
+    renderGameOver();
+    ctx.restore();
+    return;
+  }
+
+  if (gameState === STATES.WIN) {
+    renderWin();
+    ctx.restore();
+    return;
+  }
+
+  // === GAMEPLAY RENDERING ===
+
+  // Floor grid effect
+  ctx.strokeStyle = 'rgba(255, 107, 53, 0.05)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < W; i += 40) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, H);
+    ctx.stroke();
+  }
+  for (let i = 0; i < H; i += 40) {
+    ctx.beginPath();
+    ctx.moveTo(0, i);
+    ctx.lineTo(W, i);
+    ctx.stroke();
+  }
+
+  // Powerups
+  powerups.forEach(pu => {
+    const pulse = Math.sin(stateTimer * 0.1) * 2;
+    drawPixelSprite(pu.x + pulse, pu.y + pulse, POWERUP_SPRITE, 2);
+    ctx.fillStyle = pu.type === 'triple' ? COL.cyan : COL.green;
+    ctx.font = '6px "Press Start 2P"';
+    ctx.textAlign = 'center';
+    ctx.fillText(pu.type === 'triple' ? 'PROD' : 'HEAL', pu.x + 4, pu.y - 4);
+  });
+
+  // Enemies
+  enemies.forEach(e => {
+    drawPixelSprite(e.x, e.y, e.sprite, 2);
+    // HP bar
+    if (e.hp < e.maxHp) {
+      const barW = e.w;
+      ctx.fillStyle = '#333';
+      ctx.fillRect(e.x, e.y - 6, barW, 3);
+      ctx.fillStyle = COL.red;
+      ctx.fillRect(e.x, e.y - 6, barW * (e.hp / e.maxHp), 3);
+    }
+    // Label
+    ctx.fillStyle = `rgba(255,255,255,0.4)`;
+    ctx.font = '5px "Press Start 2P"';
+    ctx.textAlign = 'center';
+    ctx.fillText(e.label, e.x + e.w / 2, e.y + e.h + 10);
+  });
+
+  // Boss
+  if (boss && (gameState === STATES.BOSS)) {
+    // Boss glow
+    const glowSize = 20 + Math.sin(stateTimer * 0.05) * 10;
+    const grad = ctx.createRadialGradient(
+      boss.x + 24, boss.y + 20, 0,
+      boss.x + 24, boss.y + 20, boss.w + glowSize
+    );
+    grad.addColorStop(0, 'rgba(255, 23, 68, 0.2)');
+    grad.addColorStop(1, 'rgba(255, 23, 68, 0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(boss.x - glowSize, boss.y - glowSize, boss.w * 2 + glowSize * 2, boss.h * 2 + glowSize * 2);
+
+    // Flash on hit
+    if (boss.flashTimer > 0) {
+      ctx.globalAlpha = 0.5 + Math.sin(stateTimer) * 0.5;
+    }
+    drawPixelSprite(boss.x, boss.y, BOSS_SPRITE, 4);
+    ctx.globalAlpha = 1;
+
+    // Boss HP bar
+    const bossBarW = 200;
+    const bossBarX = W / 2 - bossBarW / 2;
+    ctx.fillStyle = '#222';
+    ctx.fillRect(bossBarX, 12, bossBarW, 10);
+    const hpPct = Math.max(0, boss.hp / boss.maxHp);
+    const bossHpColor = hpPct > 0.5 ? COL.red : (hpPct > 0.25 ? COL.orange : COL.yellow);
+    ctx.fillStyle = bossHpColor;
+    ctx.fillRect(bossBarX, 12, bossBarW * hpPct, 10);
+    ctx.strokeStyle = COL.red;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bossBarX, 12, bossBarW, 10);
+    ctx.fillStyle = COL.white;
+    ctx.font = '7px "Press Start 2P"';
+    ctx.textAlign = 'center';
+    ctx.fillText('THE AGENCY OF RECORD', W / 2, 8);
+
+    // Boss quote
+    if (boss.currentQuote) {
+      ctx.fillStyle = 'rgba(255, 107, 53, 0.8)';
+      ctx.font = '6px "Press Start 2P"';
+      ctx.fillText(boss.currentQuote, boss.x + 24, boss.y - 15);
+    }
+
+    // Phase indicator
+    const phaseLabels = ['VANITY SHIELD', 'SPAWNING MINIONS', 'FULL PANIC'];
+    ctx.fillStyle = COL.yellow;
+    ctx.font = '5px "Press Start 2P"';
+    ctx.fillText(phaseLabels[boss.phase], W / 2, 30);
+  }
+
+  // Bullets
+  bullets.forEach(b => {
+    if (b.friendly) {
+      drawPixelSprite(b.x, b.y, BULLET_SPRITE, 2);
+    } else {
+      ctx.fillStyle = b.color || COL.red;
+      if (b.isContract) {
+        // Contract projectile
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.fillStyle = '#000';
+        ctx.font = '5px "Press Start 2P"';
+        ctx.fillText('$', b.x + 2, b.y + 6);
+      } else {
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+      }
+    }
+  });
+
+  // Player
+  if (player) {
+    if (player.invincible > 0 && Math.floor(stateTimer / 3) % 2 === 0) {
+      // Flash when invincible
+    } else {
+      drawPixelSprite(player.x, player.y, PLAYER_SPRITE, 2);
+    }
+
+    // Powerup indicator
+    if (player.powerup) {
+      ctx.fillStyle = COL.cyan;
+      ctx.font = '6px "Press Start 2P"';
+      ctx.textAlign = 'left';
+      ctx.fillText(player.powerup, player.x - 5, player.y - 8);
+    }
+  }
+
+  // Particles
+  particles.forEach(p => {
+    const alpha = p.life / p.maxLife;
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = alpha;
+    ctx.fillRect(Math.floor(p.x), Math.floor(p.y), p.size, p.size);
+  });
+  ctx.globalAlpha = 1;
+
+  // Text popups
+  textPopups.forEach(t => {
+    const alpha = Math.min(1, t.life / 30);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = t.color;
+    ctx.font = '6px "Press Start 2P"';
+    ctx.textAlign = 'center';
+
+    // Word wrap for long quips
+    const words = t.text.split(' ');
+    let lines = [];
+    let line = '';
+    words.forEach(word => {
+      if ((line + ' ' + word).length > 28) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = line ? line + ' ' + word : word;
+      }
+    });
+    lines.push(line);
+    lines.forEach((l, i) => {
+      ctx.fillText(l, t.x, t.y + i * 10);
+    });
+  });
+  ctx.globalAlpha = 1;
+
+  // HUD
+  renderHUD();
+
+  ctx.restore();
+}
+
+function renderHUD() {
+  // HP
+  ctx.fillStyle = COL.white;
+  ctx.font = '8px "Press Start 2P"';
+  ctx.textAlign = 'left';
+  ctx.fillText('HP:', 10, H - 15);
+  for (let i = 0; i < player.maxHp; i++) {
+    ctx.fillStyle = i < player.hp ? COL.green : '#333';
+    ctx.fillRect(50 + i * 18, H - 22, 14, 10);
+  }
+
+  // Score
+  ctx.fillStyle = COL.orange;
+  ctx.font = '8px "Press Start 2P"';
+  ctx.textAlign = 'right';
+  ctx.fillText(`SCORE: ${score}`, W - 10, H - 15);
+
+  // Wave indicator
+  if (gameState === STATES.PLAYING) {
+    ctx.fillStyle = COL.cyan;
+    ctx.textAlign = 'right';
+    ctx.font = '6px "Press Start 2P"';
+    ctx.fillText(`WAVE ${waveCount}/9`, W - 10, 20);
+  }
+}
+
+function renderTitle() {
+  // Title
+  const pulse = Math.sin(stateTimer * 0.03) * 0.15 + 0.85;
+
+  // Big title
+  ctx.fillStyle = COL.orange;
+  ctx.font = '28px "Press Start 2P"';
+  ctx.textAlign = 'center';
+  ctx.globalAlpha = pulse;
+  ctx.fillText('SIGNAL', W / 2, H / 2 - 60);
+  ctx.fillStyle = COL.cyan;
+  ctx.fillText('//  NOISE', W / 2, H / 2 - 25);
+  ctx.globalAlpha = 1;
+
+  // Subtitle
+  ctx.fillStyle = COL.white;
+  ctx.font = '8px "Press Start 2P"';
+  ctx.fillText('A TURNDOWN GAME', W / 2, H / 2 + 10);
+
+  // Tagline
+  ctx.fillStyle = COL.gray;
+  ctx.font = '7px "Press Start 2P"';
+  ctx.fillText('FIGHT THE BS. MAKE REAL CONTENT.', W / 2, H / 2 + 35);
+
+  // Start prompt
+  if (Math.floor(stateTimer / 30) % 2 === 0) {
+    ctx.fillStyle = COL.orange;
+    ctx.font = '9px "Press Start 2P"';
+    ctx.fillText('PRESS SPACE TO START', W / 2, H / 2 + 75);
+  }
+
+  // Controls
+  ctx.fillStyle = COL.gray;
+  ctx.font = '6px "Press Start 2P"';
+  ctx.fillText('ARROW KEYS / WASD = MOVE    SPACE = SHOOT', W / 2, H - 30);
+}
+
+function renderIntro() {
+  ctx.fillStyle = COL.white;
+  ctx.font = '8px "Press Start 2P"';
+  ctx.textAlign = 'left';
+
+  const startY = 60;
+  for (let i = 0; i <= introIndex && i < introText.length; i++) {
+    const text = i < introIndex ? introText[i] : introText[i].substring(0, introCharIndex);
+    if (introText[i] === '') continue;
+
+    // Color certain lines differently
+    if (introText[i].includes('AI SLOP')) ctx.fillStyle = COL.purple;
+    else if (introText[i].includes('CIRCLE BACK')) ctx.fillStyle = COL.red;
+    else if (introText[i].includes('FRACTIONAL CMO')) ctx.fillStyle = COL.pink;
+    else if (introText[i].includes('CAMERA') || introText[i].includes('ACTUALLY WORKS')) ctx.fillStyle = COL.orange;
+    else if (introText[i].includes('PRESS SPACE')) ctx.fillStyle = COL.cyan;
+    else ctx.fillStyle = COL.white;
+
+    ctx.fillText(text, 80, startY + i * 28);
+  }
+}
+
+function renderTransition() {
+  ctx.fillStyle = COL.orange;
+  ctx.font = '14px "Press Start 2P"';
+  ctx.textAlign = 'center';
+  ctx.fillText('LEVEL 1 COMPLETE', W / 2, H / 2 - 30);
+
+  ctx.fillStyle = COL.white;
+  ctx.font = '8px "Press Start 2P"';
+  ctx.fillText(`SCORE: ${score}`, W / 2, H / 2 + 10);
+
+  if (stateTimer > 60) {
+    ctx.fillStyle = COL.red;
+    ctx.font = '10px "Press Start 2P"';
+    const blink = Math.floor(stateTimer / 15) % 2 === 0;
+    if (blink) ctx.fillText('WARNING: BOSS INCOMING', W / 2, H / 2 + 45);
+  }
+}
+
+function renderBossIntro() {
+  // Dramatic boss intro
+  const progress = Math.min(1, stateTimer / 120);
+
+  // Boss name
+  ctx.fillStyle = COL.red;
+  ctx.font = '16px "Press Start 2P"';
+  ctx.textAlign = 'center';
+  ctx.globalAlpha = progress;
+  ctx.fillText('THE AGENCY', W / 2, H / 2 - 40);
+  ctx.fillText('OF RECORD', W / 2, H / 2 - 15);
+
+  ctx.fillStyle = COL.yellow;
+  ctx.font = '7px "Press Start 2P"';
+  ctx.fillText('"WE\'LL NEED 6 MONTHS AND', W / 2, H / 2 + 20);
+  ctx.fillText('A DISCOVERY PHASE"', W / 2, H / 2 + 35);
+
+  ctx.fillStyle = COL.gray;
+  ctx.font = '6px "Press Start 2P"';
+  if (stateTimer > 100) {
+    ctx.fillText('WEAK POINT: RESULTS (THEY HAVE NONE)', W / 2, H / 2 + 65);
+  }
+
+  ctx.globalAlpha = 1;
+
+  // Draw boss preview
+  if (stateTimer > 60) {
+    drawPixelSprite(W / 2 - 24, H / 2 + 80, BOSS_SPRITE, 4);
+  }
+}
+
+function renderGameOver() {
+  // Darken
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = COL.red;
+  ctx.font = '20px "Press Start 2P"';
+  ctx.textAlign = 'center';
+  ctx.fillText('GAME OVER', W / 2, H / 2 - 40);
+
+  ctx.fillStyle = COL.gray;
+  ctx.font = '8px "Press Start 2P"';
+  ctx.fillText('THE NOISE WON THIS TIME', W / 2, H / 2);
+
+  ctx.fillStyle = COL.white;
+  ctx.fillText(`FINAL SCORE: ${score}`, W / 2, H / 2 + 30);
+
+  if (stateTimer > 60 && Math.floor(stateTimer / 25) % 2 === 0) {
+    ctx.fillStyle = COL.orange;
+    ctx.font = '9px "Press Start 2P"';
+    ctx.fillText('PRESS SPACE TO TRY AGAIN', W / 2, H / 2 + 70);
+  }
+}
+
+function renderWin() {
+  // Darken
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Render remaining particles for boss explosion
+  particles.forEach(p => {
+    const alpha = p.life / p.maxLife;
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = alpha;
+    ctx.fillRect(Math.floor(p.x), Math.floor(p.y), p.size, p.size);
+  });
+  ctx.globalAlpha = 1;
+
+  // Still update particles
+  particles.forEach(p => {
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.96; p.vy *= 0.96;
+    p.life--;
+  });
+  particles = particles.filter(p => p.life > 0);
+
+  if (stateTimer > 60) {
+    ctx.fillStyle = COL.green;
+    ctx.font = '18px "Press Start 2P"';
+    ctx.textAlign = 'center';
+    ctx.fillText('AGENCY DESTROYED', W / 2, H / 2 - 70);
+
+    ctx.fillStyle = COL.white;
+    ctx.font = '8px "Press Start 2P"';
+    ctx.fillText(`SCORE: ${score}`, W / 2, H / 2 - 35);
+  }
+
+  if (stateTimer > 120) {
+    ctx.fillStyle = COL.orange;
+    ctx.font = '9px "Press Start 2P"';
+    ctx.fillText('THE SIGNAL IS CLEAR.', W / 2, H / 2 + 5);
+
+    ctx.fillStyle = COL.cyan;
+    ctx.font = '7px "Press Start 2P"';
+    ctx.fillText('REAL CONTENT > NOISE', W / 2, H / 2 + 30);
+    ctx.fillText('STRATEGY > JARGON', W / 2, H / 2 + 45);
+    ctx.fillText('YOUR AUDIENCE > ALGORITHMS', W / 2, H / 2 + 60);
+  }
+
+  if (stateTimer > 200) {
+    ctx.fillStyle = COL.orange;
+    ctx.font = '10px "Press Start 2P"';
+    ctx.fillText('TURNDOWN.CO', W / 2, H / 2 + 95);
+
+    ctx.fillStyle = COL.white;
+    ctx.font = '7px "Press Start 2P"';
+    ctx.fillText('B2B YOUTUBE THAT ACTUALLY WORKS', W / 2, H / 2 + 115);
+  }
+
+  if (stateTimer > 250 && Math.floor(stateTimer / 25) % 2 === 0) {
+    ctx.fillStyle = COL.gray;
+    ctx.font = '7px "Press Start 2P"';
+    ctx.fillText('PRESS SPACE TO PLAY AGAIN', W / 2, H / 2 + 145);
+  }
+}
+
+// ============================================================
+// GAME LOOP
+// ============================================================
+function gameLoop() {
+  update();
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+gameLoop();
+</script>
+</body>
+</html>
